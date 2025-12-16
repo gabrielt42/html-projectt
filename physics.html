@@ -2687,11 +2687,20 @@
             socket.on('otherPlayers', (players) => {
                 // Create visual indicators for other players
                 console.log('Received other players list:', players);
+                if (!Array.isArray(players)) {
+                    console.error('otherPlayers: players is not an array:', players);
+                    return;
+                }
                 players.forEach(playerData => {
-                    if (playerData.id !== myPlayerId) {
-                        createOtherPlayer(playerData.id, playerData.position, playerData.rotation, playerData.cameraRotation);
+                    if (playerData && playerData.id && playerData.id !== myPlayerId) {
+                        console.log('Creating other player:', playerData.id, playerData.name);
+                        createOtherPlayer(playerData.id, playerData.position || { x: 0, y: 5, z: 0 }, playerData.rotation, playerData.cameraRotation);
                     }
                 });
+                // Immediately send position update so other players can see us
+                if (playerBody && camera) {
+                    sendPositionUpdate();
+                }
             });
             
             socket.on('playerJoined', (data) => {
@@ -2709,7 +2718,9 @@
             });
             
             socket.on('playerPosition', (data) => {
-                updateOtherPlayer(data.playerId, data.position, data.rotation, data.cameraRotation);
+                if (data && data.playerId && data.playerId !== myPlayerId) {
+                    updateOtherPlayer(data.playerId, data.position, data.rotation, data.cameraRotation);
+                }
             });
             
             socket.on('projectileShot', (data) => {
@@ -3810,11 +3821,19 @@
                 }, 100);
                 
                 // Also ensure we're visible to others by sending our position once playerBody exists
-                setTimeout(() => {
-                    if (socket && socket.connected && playerBody) {
+                // Send immediately and then periodically
+                const sendInitialPosition = () => {
+                    if (socket && socket.connected && playerBody && camera) {
                         sendPositionUpdate();
+                        // Send again after a short delay to ensure other players see us
+                        setTimeout(sendPositionUpdate, 200);
+                        setTimeout(sendPositionUpdate, 500);
+                    } else {
+                        // Retry if playerBody not ready yet
+                        setTimeout(sendInitialPosition, 100);
                     }
-                }, 1000);
+                };
+                sendInitialPosition();
             }
 
             // NEW: Reset Shop Costs to Base Values

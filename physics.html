@@ -3686,18 +3686,39 @@
             spawnDefenseCore();
             if (quickPlayWaitEl) quickPlayWaitEl.style.display = 'none';
             
-            defenseWave = 1;
-            defenseCoreHealth = 100;
-            defenseEnemies = [];
-            defenseTurrets = []; // Clear turrets
-            enemiesToSpawn = 10; // FIXED: Wave 1 always starts with 10 enemies
-            // NEW: Set initial total
-            totalEnemiesForWave = enemiesToSpawn;
-            
-            // Reset alert flag
-            speedyAlertShown = false; 
-            
-            defenseCoins = 150; // UPDATED: STARTING COINS 150
+            // MULTIPLAYER: Only host initializes game state; clients wait for sync
+            if (!isMultiplayerEnabled || isHost) {
+                defenseWave = 1;
+                defenseCoreHealth = 100;
+                defenseEnemies = [];
+                defenseTurrets = []; // Clear turrets
+                enemiesToSpawn = 10; // FIXED: Wave 1 always starts with 10 enemies
+                // NEW: Set initial total
+                totalEnemiesForWave = enemiesToSpawn;
+                waveInProgress = false;
+                
+                // Reset alert flag
+                speedyAlertShown = false; 
+                
+                defenseCoins = 150; // UPDATED: STARTING COINS 150
+                
+                // MULTIPLAYER: Host sends initial game state immediately
+                if (isMultiplayerEnabled && socket && socket.connected && isHost) {
+                    setTimeout(() => {
+                        socket.emit('gameStateSync', {
+                            wave: defenseWave,
+                            coreHealth: defenseCoreHealth,
+                            coins: defenseCoins,
+                            enemiesToSpawn: enemiesToSpawn,
+                            totalEnemiesForWave: totalEnemiesForWave,
+                            waveInProgress: waveInProgress
+                        });
+                    }, 100);
+                }
+            } else {
+                // Non-host: Wait for host's game state (will be received via gameStateUpdate)
+                // Don't initialize local state - wait for sync
+            }
             
             // MULTIPLAYER: Request other players list when game starts
             if (isMultiplayerEnabled && socket && socket.connected && currentRoomId) {
@@ -10279,7 +10300,7 @@
                         if (!lastGameStateSync) lastGameStateSync = 0;
                         if (now - lastGameStateSync > 2000) {
                             lastGameStateSync = now;
-                            socket.emit('syncGameState', {
+                            socket.emit('gameStateSync', {
                                 wave: defenseWave,
                                 coreHealth: defenseCoreHealth,
                                 coins: defenseCoins,

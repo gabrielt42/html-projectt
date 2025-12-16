@@ -2514,26 +2514,52 @@
                 currentRoomId = data.roomCode;
                 isHost = data.isHost;
                 clearOtherPlayers();
-                showRoomInfo(data.roomCode);
-                generateShareableLink(data.roomCode);
+                // For Quick Play, don't show room-info - just show waiting overlay
+                document.getElementById('multiplayer-lobby').style.display = 'none';
+                document.getElementById('room-info').style.display = 'none';
+                if (quickPlayWaitEl) {
+                    quickPlayWaitEl.style.display = 'flex';
+                    if (quickPlayWaitText) {
+                        quickPlayWaitText.innerText = 'Waiting for player...';
+                    }
+                }
             });
             
             socket.on('quickPlayWaiting', (data) => {
                 if (quickPlayWaitEl) {
-                    const count = data?.count || 1;
-                    if (count >= 2) {
+                    const playerCount = data?.playerCount || 1;
+                    const players = data?.players || [];
+                    
+                    // Update player list
+                    if (quickPlayWaitList) {
+                        quickPlayWaitList.innerHTML = '';
+                        players.forEach(p => {
+                            const div = document.createElement('div');
+                            div.style.padding = '8px 0';
+                            div.style.color = '#fff';
+                            div.innerText = p.name || `Player ${p.id?.slice(-4) || ''}`;
+                            quickPlayWaitList.appendChild(div);
+                        });
+                    }
+                    
+                    if (playerCount >= 2) {
+                        // Hide waiting overlay - game will start via quickPlayReady
                         quickPlayWaitEl.style.display = 'none';
                     } else {
                         quickPlayWaitEl.style.display = 'flex';
                         if (quickPlayWaitText) {
-                            quickPlayWaitText.innerText = `Waiting for player... (${count}/2)`;
+                            quickPlayWaitText.innerText = `Waiting for player... (${playerCount}/2)`;
                         }
                     }
                 }
             });
             
             socket.on('quickPlayReady', () => {
+                // Hide all lobby UI
+                document.getElementById('multiplayer-lobby').style.display = 'none';
+                document.getElementById('room-info').style.display = 'none';
                 if (quickPlayWaitEl) quickPlayWaitEl.style.display = 'none';
+                
                 // Start the game for both players after reset
                 if (!isDefenseMode || gameState !== 'playing') {
                     startDefenseMode();
@@ -2563,6 +2589,9 @@
                 });
 
                 if (players.length >= 2) {
+                    // Hide all lobby UI
+                    document.getElementById('multiplayer-lobby').style.display = 'none';
+                    document.getElementById('room-info').style.display = 'none';
                     if (quickPlayWaitEl) quickPlayWaitEl.style.display = 'none';
                     if (!isDefenseMode || gameState !== 'playing') {
                         startDefenseMode();
@@ -2971,6 +3000,9 @@
             }
             
             updateConnectionStatus('Finding game...', '#ffaa00');
+            // Hide lobby and show waiting overlay
+            document.getElementById('multiplayer-lobby').style.display = 'none';
+            document.getElementById('room-info').style.display = 'none';
             if (quickPlayWaitEl) {
                 quickPlayWaitEl.style.display = 'flex';
                 if (quickPlayWaitText) quickPlayWaitText.innerText = 'Waiting for player...';
@@ -2981,6 +3013,8 @@
                 } else {
                     updateConnectionStatus('Failed to join game', '#ff6666');
                     if (quickPlayWaitEl) quickPlayWaitEl.style.display = 'none';
+                    // Show lobby again on error
+                    document.getElementById('multiplayer-lobby').style.display = 'flex';
                 }
             });
         }

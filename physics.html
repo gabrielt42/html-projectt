@@ -2231,6 +2231,8 @@
         let totalEnemiesForWave = 0; 
         let nextSpawnTime = 0;
         let waveInProgress = false;
+        // MULTIPLAYER: Deterministic spawn counter for fixed positions
+        let enemySpawnCounter = 0;
 
         // MULTIPLAYER Variables
         let socket = null;
@@ -3711,6 +3713,11 @@
                 totalEnemiesForWave = enemiesToSpawn;
                 waveInProgress = false;
                 
+                // MULTIPLAYER: Reset spawn counter at game start
+                if (isMultiplayerEnabled && isDefenseMode) {
+                    enemySpawnCounter = 0;
+                }
+                
                 // Reset alert flag
                 speedyAlertShown = false; 
                 
@@ -3847,8 +3854,19 @@
         function resumeGame() {
             isPlayerPaused = false;
             pauseMenuEl.style.display = 'none';
-            const promise = document.body.requestPointerLock();
-            if (promise) promise.catch(e=>{});
+            // Request pointer lock - if it fails, try again after a short delay
+            const requestLock = () => {
+                const promise = document.body.requestPointerLock();
+                if (promise) {
+                    promise.catch(err => {
+                        // If it fails, try again after 100ms
+                        setTimeout(() => {
+                            document.body.requestPointerLock().catch(e => {});
+                        }, 100);
+                    });
+                }
+            };
+            requestLock();
         }
         window.resumeGame = resumeGame;
 
@@ -5488,22 +5506,33 @@
             // Only host spawns enemies in multiplayer to keep waves in sync
             if (isMultiplayerEnabled && isDefenseMode && !isHost) return;
             
-            // FIXED: Spawn enemies in a random circle around the core (0,0,0) instead of relative to camera
-            // This ensures all clients see enemies at the same positions
-            const angle = Math.random() * Math.PI * 2; // Random angle around the core
-
-            // UPDATED: Distance Logic
-            // Standard Enemies: 200 - 310
-            // Boss: 380 - 460 (Farther away)
-            let dist = 200 + Math.random() * 110; 
-            if (isBoss) {
-                dist = 380 + Math.random() * 80;
-            } else if (isSpeedy) {
-                // UPDATED: Spawn 40 units further away (was 25)
-                dist += 40;
-            } else if (isSplitter) {
-                // Splitter spawns further away
-                dist += 25; // Increased from 15 to 25
+            // MULTIPLAYER: Use deterministic spawn positions for exact sync
+            let angle, dist;
+            if (isMultiplayerEnabled && isDefenseMode) {
+                // Use fixed spawn pattern based on counter and wave
+                enemySpawnCounter++;
+                const spawnIndex = enemySpawnCounter;
+                const waveOffset = (defenseWave - 1) * 1000; // Different pattern per wave
+                
+                // Deterministic angle: evenly spaced around circle with some variation
+                angle = ((spawnIndex * 137.508) % 360) * (Math.PI / 180); // Golden angle for even distribution
+                angle += (waveOffset % 360) * (Math.PI / 180); // Wave variation
+                
+                // Deterministic distance based on spawn index and type
+                const baseDist = isBoss ? 420 : (isSpeedy ? 250 : (isSplitter ? 235 : 255));
+                const distVariation = ((spawnIndex * 7919) % 100) / 100; // Pseudo-random but deterministic
+                dist = baseDist + (isBoss ? distVariation * 40 : distVariation * 110);
+            } else {
+                // Single player: use random positions
+                angle = Math.random() * Math.PI * 2;
+                dist = 200 + Math.random() * 110;
+                if (isBoss) {
+                    dist = 380 + Math.random() * 80;
+                } else if (isSpeedy) {
+                    dist += 40;
+                } else if (isSplitter) {
+                    dist += 25;
+                }
             }
             
             const x = Math.cos(angle) * dist;
@@ -5964,7 +5993,8 @@
                     maxHp: hp,
                     radius: radius,
                     mass: mass,
-                    coinValue: coinVal
+                    coinValue: coinVal,
+                    spawnIndex: enemySpawnCounter // Include spawn index for deterministic positioning
                 });
             }
             
@@ -7019,8 +7049,19 @@
                     const oldWave = defenseWave;
                     defenseWave++;
                     
+                    // MULTIPLAYER: Reset spawn counter for new wave (deterministic spawning)
+                    if (isMultiplayerEnabled && isDefenseMode) {
+                        enemySpawnCounter = 0;
+                    }
+                    
                     // FIXED: Wave 1 = 10 enemies, then increase by 2-3 each wave
-                    enemiesToSpawn = 10 + (defenseWave - 1) * (2 + Math.floor(Math.random() * 2)); // 10 + (wave-1) * (2-3)
+                    // MULTIPLAYER: Use deterministic enemy count for sync
+                    if (isMultiplayerEnabled && isDefenseMode) {
+                        // Deterministic: use wave number to determine count
+                        enemiesToSpawn = 10 + (defenseWave - 1) * 2 + (defenseWave % 2); // Alternates between +2 and +3
+                    } else {
+                        enemiesToSpawn = 10 + (defenseWave - 1) * (2 + Math.floor(Math.random() * 2)); // 10 + (wave-1) * (2-3)
+                    }
                     // NEW: Update total for percentage calculation
                     totalEnemiesForWave = enemiesToSpawn;
                     

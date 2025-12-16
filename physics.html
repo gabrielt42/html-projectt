@@ -1313,8 +1313,9 @@
                     <button class="menu-btn primary" onclick="joinRoomByCode()" style="flex: 1;">
                         <span class="btn-text">Join</span>
                     </button>
-                    <button class="menu-btn secondary" onclick="showLobbyOptions()" style="flex: 1;">
-                        <span class="btn-text">Cancel</span>
+                    <button class="menu-btn secondary" onclick="returnToMainMenu()" style="flex: 1;">
+                        <span class="btn-icon">←</span>
+                        <span class="btn-text">Return to Menu</span>
                     </button>
                 </div>
             </div>
@@ -1326,16 +1327,52 @@
                                                    letter-spacing: 8px; font-family: monospace; text-align: center; 
                                                    padding: 15px; background: rgba(255,157,0,0.2); border-radius: 8px; 
                                                    margin-bottom: 15px;"></div>
-                <p style="color: #aaa; margin: 0; text-align: center; font-size: 14px;">
+                <p style="color: #aaa; margin: 0; text-align: center; font-size: 14px; margin-bottom: 15px;">
                     Share this code with friends to join your room
                 </p>
+                
+                <div style="margin-bottom: 15px;">
+                    <label style="color: #fff; font-size: 14px; display: block; margin-bottom: 8px;">Shareable Link</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="text" id="shareable-link-input" readonly
+                               style="flex: 1; padding: 10px; font-size: 12px; background: rgba(0,0,0,0.5); 
+                                      border: 2px solid #ff9d00; color: #fff; border-radius: 6px; 
+                                      font-family: monospace; box-sizing: border-box;">
+                        <button class="menu-btn secondary" onclick="copyShareableLink()" 
+                                style="padding: 10px 15px; min-width: auto;">
+                            <span class="btn-text">Copy</span>
+                        </button>
+                    </div>
+                    <p style="color: #aaa; margin: 8px 0 0 0; text-align: center; font-size: 11px;">
+                        Send this link to friends - they can click it to join automatically!
+                    </p>
+                </div>
+                
                 <button class="menu-btn primary" onclick="startGameFromLobby()" style="width: 100%; margin-top: 15px;">
                     <span class="btn-text">Start Game</span>
+                </button>
+                <button class="menu-btn secondary" onclick="returnToMainMenu()" style="width: 100%; margin-top: 10px;">
+                    <span class="btn-icon">←</span>
+                    <span class="btn-text">Return to Menu</span>
                 </button>
             </div>
 
             <div id="connection-status" style="margin-top: 20px; padding: 10px; text-align: center; 
                                                color: #ff6666; display: none;"></div>
+        </div>
+    </div>
+
+    <!-- QUICK PLAY WAIT OVERLAY -->
+    <div id="quickplay-wait" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+                                     background: rgba(0,0,0,0.65); backdrop-filter: blur(4px); 
+                                     z-index: 1500; align-items: center; justify-content: center;">
+        <div style="padding: 24px 32px; background: rgba(20,20,20,0.9); border: 2px solid #ff9d00; border-radius: 12px; 
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.6); color: #fff; font-size: 20px; font-weight: 700; 
+                    text-align: center; min-width: 340px; max-width: 420px;">
+            <div id="quickplay-wait-text" style="margin-bottom: 12px;">Waiting for player...</div>
+            <div style="margin-bottom: 12px; font-size: 14px; color: #ffcc80;">Stay here — game will start automatically when another player joins.</div>
+            <div id="quickplay-wait-list" style="margin-top: 8px; font-size: 14px; color: #fff; background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; text-align: left;">
+            </div>
         </div>
     </div>
 
@@ -2202,9 +2239,27 @@
         let myPlayerId = null;
         let otherPlayers = new Map(); // playerId -> {mesh, position, etc}
         let lastPositionUpdate = 0;
-        const POSITION_UPDATE_INTERVAL = 100; // Update position every 100ms
+        const POSITION_UPDATE_INTERVAL = 500; // Update position every 500ms
         let isHost = false; // First player in room is host
+        let lastGameStateSync = 0; // Last time game state was synced (host only)
         let networkEnemies = new Map(); // Track enemies by network ID
+        let unlockedWeapons = ['heavy']; // Global unlocked weapons list
+        let isPlayerPaused = false; // Player-specific pause (game continues)
+        function clearEnemies() {
+            if (defenseEnemies && defenseEnemies.length) {
+                for (let i = defenseEnemies.length - 1; i >= 0; i--) {
+                    const e = defenseEnemies[i];
+                    if (e && e.body) {
+                        try { world.removeBody(e.body); } catch (err) {}
+                    }
+                    if (e && e.mesh) {
+                        try { scene.remove(e.mesh); } catch (err) {}
+                    }
+                    defenseEnemies.splice(i, 1);
+                }
+            }
+            if (networkEnemies) networkEnemies.clear();
+        }
         
         // NEW: Flag for alert
         let placementGhost = null; // NEW: Track the hologram
@@ -2296,6 +2351,9 @@
         const fpsTrackerEl = document.getElementById('fps-tracker');
         const slowMoEl = document.getElementById('slowmo');
         const uiControlsEl = document.getElementById('ui-controls');
+        const quickPlayWaitEl = document.getElementById('quickplay-wait');
+        const quickPlayWaitText = document.getElementById('quickplay-wait-text');
+        const quickPlayWaitList = document.getElementById('quickplay-wait-list');
         
         // FPS tracking variables
         let frameCount = 0;
@@ -2340,21 +2398,23 @@
         function initMultiplayer() {
             if (!isMultiplayerEnabled) return;
             
-            // Connect to server - check for custom IP first
+            // Connect to server - use Render URL for production
+            const RENDER_SERVER_URL = 'https://defense-game.onrender.com';
             let serverUrl;
-            const serverIpInput = document.getElementById('server-ip-input');
-            const customServerIp = serverIpInput ? serverIpInput.value.trim() : '';
             
-            if (customServerIp && customServerIp !== '' && customServerIp !== 'localhost') {
-                // Use custom IP address
-                serverUrl = `http://${customServerIp}:3000`;
-            } else if (window.location.protocol === 'file:') {
-                // Opening file directly - use localhost
-                serverUrl = 'http://localhost:3000';
+            // Check if we're opening from a shareable link (has room parameter)
+            const urlParams = new URLSearchParams(window.location.search);
+            const roomFromUrl = urlParams.get('room');
+            
+            if (window.location.protocol === 'file:') {
+                // Opening file directly - use Render server
+                serverUrl = RENDER_SERVER_URL;
             } else if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-                serverUrl = 'http://localhost:3000';
+                // Local development - use Render server (or change to localhost:3000 for local testing)
+                serverUrl = RENDER_SERVER_URL;
             } else {
-                serverUrl = window.location.origin;
+                // Use Render server for all other cases
+                serverUrl = RENDER_SERVER_URL;
             }
             
             // Suppress socket.io errors BEFORE creating connection
@@ -2437,19 +2497,77 @@
             socket.on('roomCreated', (data) => {
                 currentRoomId = data.roomCode;
                 isHost = data.isHost;
+                clearOtherPlayers();
                 showRoomInfo(data.roomCode);
+                generateShareableLink(data.roomCode);
             });
             
             socket.on('roomJoined', (data) => {
                 currentRoomId = data.roomCode;
                 isHost = data.isHost;
+                clearOtherPlayers();
                 showRoomInfo(data.roomCode);
+                generateShareableLink(data.roomCode);
             });
             
             socket.on('quickPlayJoined', (data) => {
                 currentRoomId = data.roomCode;
                 isHost = data.isHost;
+                clearOtherPlayers();
                 showRoomInfo(data.roomCode);
+                generateShareableLink(data.roomCode);
+            });
+            
+            socket.on('quickPlayWaiting', (data) => {
+                if (quickPlayWaitEl) {
+                    const count = data?.count || 1;
+                    if (count >= 2) {
+                        quickPlayWaitEl.style.display = 'none';
+                    } else {
+                        quickPlayWaitEl.style.display = 'flex';
+                        if (quickPlayWaitText) {
+                            quickPlayWaitText.innerText = `Waiting for player... (${count}/2)`;
+                        }
+                    }
+                }
+            });
+            
+            socket.on('quickPlayReady', () => {
+                if (quickPlayWaitEl) quickPlayWaitEl.style.display = 'none';
+                // Start the game for both players after reset
+                if (!isDefenseMode || gameState !== 'playing') {
+                    startDefenseMode();
+                }
+            });
+
+            socket.on('quickPlayPlayers', (data) => {
+                if (!quickPlayWaitList) return;
+                quickPlayWaitList.innerHTML = '';
+                const players = data?.players || [];
+                players.forEach(p => {
+                    const div = document.createElement('div');
+                    div.style.display = 'flex';
+                    div.style.justifyContent = 'space-between';
+                    div.style.padding = '6px 0';
+                    div.style.borderBottom = '1px solid rgba(255,255,255,0.08)';
+                    const name = document.createElement('span');
+                    name.innerText = (p.id === myPlayerId) ? 'You' : p.name || `Player ${p.id?.slice(-4) || ''}`;
+                    name.style.color = (p.id === myPlayerId) ? '#ffcc80' : '#ffffff';
+                    const tag = document.createElement('span');
+                    tag.innerText = (p.id === myPlayerId) ? 'HOST' : 'READY';
+                    tag.style.fontSize = '12px';
+                    tag.style.color = '#ff9d00';
+                    div.appendChild(name);
+                    div.appendChild(tag);
+                    quickPlayWaitList.appendChild(div);
+                });
+
+                if (players.length >= 2) {
+                    if (quickPlayWaitEl) quickPlayWaitEl.style.display = 'none';
+                    if (!isDefenseMode || gameState !== 'playing') {
+                        startDefenseMode();
+                    }
+                }
             });
             
             socket.on('joinRoomFailed', (data) => {
@@ -2479,14 +2597,20 @@
             
             socket.on('otherPlayers', (players) => {
                 // Create visual indicators for other players
+                console.log('Received other players list:', players);
                 players.forEach(playerData => {
-                    createOtherPlayer(playerData.id, playerData.position, playerData.rotation, playerData.cameraRotation);
+                    if (playerData.id !== myPlayerId) {
+                        createOtherPlayer(playerData.id, playerData.position, playerData.rotation, playerData.cameraRotation);
+                    }
                 });
             });
             
             socket.on('playerJoined', (data) => {
                 console.log('Player joined:', data.playerId);
-                // Other player joined - they will send their position
+                // Other player joined - create them if they don't exist
+                if (data.playerId !== myPlayerId && !otherPlayers.has(data.playerId)) {
+                    createOtherPlayer(data.playerId, data.position, null, null);
+                }
             });
             
             socket.on('playerLeft', (data) => {
@@ -2507,16 +2631,26 @@
             
             socket.on('enemyHit', (data) => {
                 // Enemy was hit by another player
-                if (data.playerId !== myPlayerId && defenseEnemies[data.enemyIndex]) {
-                    // Apply damage (server should validate)
-                    if (typeof damageEnemy === 'function') {
-                        damageEnemy(defenseEnemies[data.enemyIndex], data.damage);
-                    }
+                const enemy = defenseEnemies[data.enemyIndex];
+                if (enemy) {
+                    damageEnemy(enemy, data.damage);
                 }
             });
             
             socket.on('enemyKilled', (data) => {
-                // Enemy was killed - sync coins
+                // Enemy was killed - sync coins and remove if still present
+                const enemy = defenseEnemies[data.enemyIndex];
+                if (enemy) {
+                    // Remove without double coins (coins already included in payload)
+                    const e = defenseEnemies[data.enemyIndex];
+                    if (e && e.body) {
+                        world.removeBody(e.body);
+                    }
+                    if (e && e.mesh) {
+                        scene.remove(e.mesh);
+                    }
+                    defenseEnemies.splice(data.enemyIndex, 1);
+                }
                 defenseCoins = data.totalCoins || defenseCoins;
                 updateDefenseUI();
             });
@@ -2537,16 +2671,101 @@
                 updateDefenseUI();
             });
             
+            socket.on('gameStateUpdate', (data) => {
+                // Update local game state from server
+                if (data.coins !== undefined) {
+                    defenseCoins = data.coins || defenseCoins;
+                }
+                if (data.coreHealth !== undefined) {
+                    defenseCoreHealth = data.coreHealth || defenseCoreHealth;
+                }
+                if (data.wave !== undefined) {
+                    defenseWave = data.wave || defenseWave;
+                }
+                if (data.enemiesToSpawn !== undefined) {
+                    enemiesToSpawn = data.enemiesToSpawn || enemiesToSpawn;
+                }
+                if (data.totalEnemiesForWave !== undefined) {
+                    totalEnemiesForWave = data.totalEnemiesForWave || totalEnemiesForWave;
+                }
+                if (data.waveInProgress !== undefined) {
+                    waveInProgress = data.waveInProgress;
+                }
+                // Handle pause state
+                if (data.isPaused !== undefined && data.isPaused && gameState === 'playing') {
+                    gameState = 'paused';
+                    pauseMenuEl.style.display = 'flex';
+                    document.exitPointerLock();
+                } else if (data.isPaused !== undefined && !data.isPaused && gameState === 'paused') {
+                    gameState = 'playing';
+                    pauseMenuEl.style.display = 'none';
+                    const promise = document.body.requestPointerLock();
+                    if (promise) promise.catch(e=>{});
+                }
+                updateDefenseUI();
+            });
+            
+            socket.on('gamePaused', (data) => {
+                // Ignore remote pause; game keeps running
+                console.log('Ignored remote gamePaused from:', data.playerId);
+            });
+            
+            socket.on('gameResumed', (data) => {
+                // Ignore remote resume
+                console.log('Ignored remote gameResumed from:', data.playerId);
+            });
+            
+            socket.on('gameOver', (data) => {
+                console.log('Game over received:', data);
+                endDefenseGame();
+            });
+            
             socket.on('enemySpawned', (data) => {
-                // Enemy spawned by host - create it locally
-                if (data.id && !networkEnemies.has(data.id)) {
+                // Host already spawned locally; others create mirrored enemy
+                if (!isHost && data.id && !networkEnemies.has(data.id)) {
                     createNetworkEnemy(data);
                 }
             });
             
             socket.on('shopPurchase', (data) => {
-                // Shop purchase made - sync coins for all players
+                // Shop purchase made by any player - sync for everyone
                 defenseCoins = data.totalCoins || defenseCoins;
+                
+                // Apply the purchase effect locally
+                if (data.type === 'repair') {
+                    defenseCoreHealth = Math.min(100, defenseCoreHealth + 25);
+                    shopCosts.repair = Math.floor(data.cost * 1.1);
+                    statusEl.innerText = "CORE REPAIRED (+25%)";
+                } else if (data.type === 'upgradeHeavy') {
+                    massCannonLevel++;
+                    shopCosts.upgradeHeavy = Math.floor(data.cost * 1.3);
+                    statusEl.innerText = `MASS CANNON LVL ${massCannonLevel}`;
+                } else if (data.type === 'upgradeMaxCharge') {
+                    hasMaxChargeUpgrade = true;
+                    statusEl.innerText = "MAX CHARGE UPGRADED (2x -> 3x DMG)";
+                } else if (data.type === 'upgradeShield') {
+                    coreShieldLevel++;
+                    const addedCap = Math.floor(50 * Math.pow(1.5, coreShieldLevel - 1));
+                    coreShieldMax += addedCap;
+                    coreShieldCurrent = coreShieldMax;
+                    shopCosts.upgradeShield = Math.floor(data.cost * 1.35);
+                    if(coreShieldLevel === 1 && defenseCoreMesh && defenseCoreMesh.userData.shield) {
+                        defenseCoreMesh.userData.shield.visible = true;
+                    }
+                    statusEl.innerText = `SHIELD UPGRADED (MAX ${coreShieldMax})`;
+                } else if (data.type === 'upgradeShieldRegen') {
+                    coreShieldRegenLevel++;
+                    shopCosts.upgradeShieldRegen = Math.floor(data.cost * 1.3);
+                    statusEl.innerText = `QUICK REGEN LVL ${coreShieldRegenLevel}`;
+                } else if (data.type === 'upgradeShieldDurability') {
+                    coreShieldDurabilityLevel++;
+                    shopCosts.upgradeShieldDurability = Math.floor(data.cost * 1.3);
+                    statusEl.innerText = `DURABILITY LVL ${coreShieldDurabilityLevel}`;
+                }
+                
+                if (data.type !== 'barrier' && data.type !== 'turret') {
+                    SoundManager.playCharge(0.5);
+                }
                 updateDefenseUI();
             });
             
@@ -2558,6 +2777,8 @@
             socket.on('gameReset', () => {
                 // Game was reset
                 if (isDefenseMode) {
+                    // Clear local enemies and restart defense fresh
+                    clearEnemies();
                     startDefenseMode();
                 }
             });
@@ -2569,27 +2790,97 @@
             document.getElementById('multiplayer-lobby').style.display = 'flex';
             showLobbyOptions();
             
-            // Initialize connection if not already connected
-            if (!socket || !socket.connected) {
+            // Check if we're opening from a shareable link
+            const urlParams = new URLSearchParams(window.location.search);
+            const roomFromUrl = urlParams.get('room');
+            
+            if (roomFromUrl && roomFromUrl.length === 6) {
+                // Auto-join room from shareable link
+                updateConnectionStatus('Joining room from link...', '#ffaa00');
                 isMultiplayerEnabled = true;
-                updateConnectionStatus('Connecting to server...', '#ffaa00');
                 initMultiplayer();
                 
-                // Check connection after a delay
-                setTimeout(() => {
-                    if (!socket || !socket.connected) {
-                        updateConnectionStatus('Server not running. Please start the server with: npm start', '#ff6666');
+                // Wait for connection, then auto-join
+                const checkAndJoin = setInterval(() => {
+                    if (socket && socket.connected) {
+                        clearInterval(checkAndJoin);
+                        joinRoomByCodeFromLink(roomFromUrl);
+                    } else if (socket && socket.disconnected) {
+                        clearInterval(checkAndJoin);
+                        updateConnectionStatus('Failed to connect. Please try again.', '#ff6666');
                     }
-                }, 2000);
+                }, 100);
+                
+                setTimeout(() => {
+                    clearInterval(checkAndJoin);
+                    if (!socket || !socket.connected) {
+                        updateConnectionStatus('Connection timeout. Please try again.', '#ff6666');
+                    }
+                }, 5000);
             } else {
-                updateConnectionStatus('Connected', '#00ff00');
+                // Normal lobby - initialize connection if not already connected
+                if (!socket || !socket.connected) {
+                    isMultiplayerEnabled = true;
+                    updateConnectionStatus('Connecting to server...', '#ffaa00');
+                    initMultiplayer();
+                    
+                    // Check connection after a delay
+                    setTimeout(() => {
+                        if (!socket || !socket.connected) {
+                            updateConnectionStatus('Connecting to server...', '#ffaa00');
+                        }
+                    }, 2000);
+                } else {
+                    updateConnectionStatus('Connected', '#00ff00');
+                }
             }
+        }
+        
+        function joinRoomByCodeFromLink(roomCode) {
+            if (!socket || !socket.connected) {
+                updateConnectionStatus('Not connected. Please wait...', '#ffaa00');
+                return;
+            }
+            
+            updateConnectionStatus('Joining room...', '#ffaa00');
+            socket.emit('joinRoomByCode', roomCode.toUpperCase(), (data) => {
+                if (data && data.success) {
+                    updateConnectionStatus('Joined room!', '#00ff00');
+                    // Clean URL (remove room parameter)
+                    const newUrl = window.location.href.split('?')[0];
+                    window.history.replaceState({}, document.title, newUrl);
+                } else {
+                    if (data && data.reason === 'room_not_found') {
+                        updateConnectionStatus('Room not found. The link may be expired.', '#ff6666');
+                    } else {
+                        updateConnectionStatus('Failed to join room', '#ff6666');
+                    }
+                }
+            });
         }
         
         function closeMultiplayerLobby() {
             document.getElementById('multiplayer-lobby').style.display = 'none';
             document.getElementById('main-menu').style.display = 'flex';
             showLobbyOptions();
+        }
+        
+        function returnToMainMenu() {
+            // Disconnect from server if connected
+            if (socket && socket.connected) {
+                socket.disconnect();
+                socket = null;
+            }
+            
+            // Close lobby and return to main menu
+            document.getElementById('multiplayer-lobby').style.display = 'none';
+            document.getElementById('main-menu').style.display = 'flex';
+            showLobbyOptions();
+            
+            // Reset multiplayer state
+            isMultiplayerEnabled = false;
+            currentRoomId = 'default';
+            isHost = false;
         }
         
         function showLobbyOptions() {
@@ -2617,6 +2908,38 @@
             document.getElementById('room-info').style.display = 'block';
             const codeDisplay = document.getElementById('room-code-display');
             if (codeDisplay) codeDisplay.innerText = roomCode;
+        }
+        
+        function generateShareableLink(roomCode) {
+            // Generate shareable link with room code
+            const currentUrl = window.location.href.split('?')[0]; // Get URL without query params
+            const shareableLink = `${currentUrl}?room=${roomCode}`;
+            
+            const linkInput = document.getElementById('shareable-link-input');
+            if (linkInput) {
+                linkInput.value = shareableLink;
+            }
+        }
+        
+        function copyShareableLink() {
+            const linkInput = document.getElementById('shareable-link-input');
+            if (linkInput) {
+                linkInput.select();
+                linkInput.setSelectionRange(0, 99999); // For mobile devices
+                document.execCommand('copy');
+                
+                // Show feedback
+                const copyBtn = event.target.closest('button');
+                if (copyBtn) {
+                    const originalText = copyBtn.querySelector('.btn-text').innerText;
+                    copyBtn.querySelector('.btn-text').innerText = 'Copied!';
+                    setTimeout(() => {
+                        copyBtn.querySelector('.btn-text').innerText = originalText;
+                    }, 2000);
+                }
+                
+                updateConnectionStatus('Link copied to clipboard!', '#00ff00');
+            }
         }
         
         function updateConnectionStatus(message, color) {
@@ -2648,11 +2971,16 @@
             }
             
             updateConnectionStatus('Finding game...', '#ffaa00');
+            if (quickPlayWaitEl) {
+                quickPlayWaitEl.style.display = 'flex';
+                if (quickPlayWaitText) quickPlayWaitText.innerText = 'Waiting for player...';
+            }
             socket.emit('quickPlay', (data) => {
                 if (data) {
                     updateConnectionStatus('Joined game!', '#00ff00');
                 } else {
                     updateConnectionStatus('Failed to join game', '#ff6666');
+                    if (quickPlayWaitEl) quickPlayWaitEl.style.display = 'none';
                 }
             });
         }
@@ -2743,43 +3071,82 @@
         function createOtherPlayer(playerId, position, rotation, cameraRotation) {
             if (otherPlayers.has(playerId)) return;
             
-            // Create a simple indicator for other players
-            const geometry = new THREE.SphereGeometry(1, 16, 16);
-            const material = new THREE.MeshBasicMaterial({ 
+            // Create a more visible player indicator
+            const group = new THREE.Group();
+            
+            // Main body - larger, more visible sphere
+            const bodyGeometry = new THREE.SphereGeometry(1.5, 16, 16);
+            const bodyMaterial = new THREE.MeshBasicMaterial({ 
                 color: 0x00ff00, 
                 transparent: true, 
-                opacity: 0.7 
+                opacity: 0.9 
             });
-            const mesh = new THREE.Mesh(geometry, material);
+            const bodyMesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            group.add(bodyMesh);
             
-            // Add name label
+            // Glow effect - outer ring
+            const glowGeometry = new THREE.SphereGeometry(2, 16, 16);
+            const glowMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0x00ff00, 
+                transparent: true, 
+                opacity: 0.3,
+                side: THREE.BackSide
+            });
+            const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
+            group.add(glowMesh);
+            
+            // Player indicator arrow pointing up (shows which way they're facing)
+            const arrowGeometry = new THREE.ConeGeometry(0.3, 1.5, 8);
+            const arrowMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0x00ff00, 
+                transparent: true, 
+                opacity: 0.8 
+            });
+            const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial);
+            arrow.position.y = 1.5;
+            arrow.rotation.x = Math.PI;
+            group.add(arrow);
+            
+            // Name label - improved visibility
             const canvas = document.createElement('canvas');
             const context = canvas.getContext('2d');
-            canvas.width = 256;
-            canvas.height = 64;
-            context.fillStyle = 'rgba(0, 0, 0, 0.5)';
-            context.fillRect(0, 0, 256, 64);
-            context.fillStyle = '#ffffff';
-            context.font = '24px Arial';
+            canvas.width = 512;
+            canvas.height = 128;
+            context.fillStyle = 'rgba(0, 0, 0, 0.8)';
+            context.fillRect(0, 0, 512, 128);
+            context.fillStyle = '#00ff00';
+            context.font = 'bold 32px Arial';
             context.textAlign = 'center';
-            context.fillText('Player', 128, 40);
+            context.strokeStyle = '#000000';
+            context.lineWidth = 4;
+            context.strokeText(`Player ${playerId.slice(-4)}`, 256, 70);
+            context.fillText(`Player ${playerId.slice(-4)}`, 256, 70);
             
             const texture = new THREE.CanvasTexture(canvas);
-            const spriteMaterial = new THREE.SpriteMaterial({ map: texture });
+            const spriteMaterial = new THREE.SpriteMaterial({ 
+                map: texture,
+                transparent: true,
+                depthTest: false
+            });
             const sprite = new THREE.Sprite(spriteMaterial);
-            sprite.scale.set(4, 1, 1);
-            sprite.position.y = 3;
-            mesh.add(sprite);
+            sprite.scale.set(6, 1.5, 1);
+            sprite.position.y = 4;
+            group.add(sprite);
             
             if (position) {
-                mesh.position.set(position.x, position.y, position.z);
+                group.position.set(position.x, position.y || 5, position.z);
+            } else {
+                group.position.set(0, 5, 0);
             }
             
-            scene.add(mesh);
+            scene.add(group);
             otherPlayers.set(playerId, {
-                mesh: mesh,
+                mesh: group,
+                body: bodyMesh,
+                glow: glowMesh,
+                arrow: arrow,
                 sprite: sprite,
-                position: position || { x: 0, y: 0, z: 0 },
+                position: position || { x: 0, y: 5, z: 0 },
                 rotation: rotation || { x: 0, y: 0, z: 0 },
                 cameraRotation: cameraRotation || { x: 0, y: 0 }
             });
@@ -2789,11 +3156,17 @@
             const player = otherPlayers.get(playerId);
             if (player && player.mesh) {
                 if (position) {
-                    player.mesh.position.set(position.x, position.y || 5, position.z);
-                    player.position = position;
+                    // Update position - ensure Y is at ground level or player height
+                    const yPos = position.y !== undefined ? position.y : 5;
+                    player.mesh.position.set(position.x, yPos, position.z);
+                    player.position = { ...position, y: yPos };
                 }
                 if (rotation) {
+                    // Update rotation - arrow points in the direction player is facing
                     player.mesh.rotation.set(rotation.x, rotation.y, rotation.z);
+                    if (player.arrow) {
+                        player.arrow.rotation.y = rotation.y;
+                    }
                     player.rotation = rotation;
                 }
                 if (cameraRotation) {
@@ -2806,14 +3179,41 @@
             const player = otherPlayers.get(playerId);
             if (player && player.mesh) {
                 scene.remove(player.mesh);
+                // Dispose all materials and geometries
                 if (player.sprite) {
                     player.sprite.material.dispose();
                     player.sprite.map.dispose();
                 }
-                player.mesh.geometry.dispose();
-                player.mesh.material.dispose();
+                if (player.body) {
+                    player.body.geometry.dispose();
+                    player.body.material.dispose();
+                }
+                if (player.glow) {
+                    player.glow.geometry.dispose();
+                    player.glow.material.dispose();
+                }
+                if (player.arrow) {
+                    player.arrow.geometry.dispose();
+                    player.arrow.material.dispose();
+                }
+                // Dispose any remaining children
+                player.mesh.traverse((child) => {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) {
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(m => m.dispose());
+                        } else {
+                            child.material.dispose();
+                        }
+                    }
+                });
                 otherPlayers.delete(playerId);
             }
+        }
+
+        function clearOtherPlayers() {
+            otherPlayers.forEach((_, id) => removeOtherPlayer(id));
+            otherPlayers.clear();
         }
         
         function createNetworkProjectile(data) {
@@ -2849,10 +3249,56 @@
         }
         
         function createNetworkEnemy(data) {
-            // This will be called when host spawns an enemy
-            // For now, we'll let the host handle all enemy spawning
-            // and just sync the state
+            // Create a mirrored enemy from host data
+            if (!data) return;
             networkEnemies.set(data.id, data);
+            
+            const radius = data.radius || 2.625;
+            const mass = data.mass || 60;
+            const hp = data.hp || 60;
+            const coinVal = data.coinValue || 9;
+            const isBoss = !!data.isBoss;
+            const isSpeedy = !!data.isSpeedy;
+            const isSplitter = !!data.isSplitter;
+            
+            // Physics body
+            const shape = new CANNON.Sphere(radius);
+            const body = new CANNON.Body({ mass });
+            body.addShape(shape);
+            body.position.set(data.position?.x || 0, data.position?.y || radius, data.position?.z || 0);
+            body.velocity.set(data.velocity?.x || 0, data.velocity?.y || 0, data.velocity?.z || 0);
+            body.linearDamping = 0.1;
+            body.angularDamping = 0.1;
+            
+            const enemyObj = {
+                id: data.id,
+                body,
+                hp,
+                maxHp: data.maxHp || hp,
+                isBoss,
+                isSpeedy,
+                isSplitter,
+                coinValue: coinVal,
+                lastHitTime: 0
+            };
+            
+            // Simple visual (reuse existing builder)
+            const color = isBoss ? 0xaa0000 : (isSpeedy ? 0x00aaff : 0xff3300);
+            const geo = new THREE.SphereGeometry(radius, 16, 16);
+            const mat = new THREE.MeshStandardMaterial({ color });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            enemyObj.mesh = mesh;
+            mesh.userData.enemyRef = enemyObj;
+            scene.add(mesh);
+            
+            body.userData = { enemyRef: enemyObj };
+            enemyObj.body = body;
+            enemyObj.mesh = mesh;
+            
+            world.addBody(body);
+            defenseEnemies.push(enemyObj);
         }
         
         function sendPositionUpdate() {
@@ -3201,8 +3647,10 @@
             if (promise) promise.catch(e => {});
 
             // Initialize Defense
+            clearEnemies();
             clearAllStructures();
             spawnDefenseCore();
+            if (quickPlayWaitEl) quickPlayWaitEl.style.display = 'none';
             
             defenseWave = 1;
             defenseCoreHealth = 100;
@@ -3217,22 +3665,22 @@
             
             defenseCoins = 150; // UPDATED: STARTING COINS 150
             
-            // MULTIPLAYER: Join room when game starts (only if multiplayer is enabled and room code exists)
-            if (isMultiplayerEnabled && currentRoomId && currentRoomId !== 'default') {
-                if (!socket) {
-                    initMultiplayer();
-                }
+            // MULTIPLAYER: Request other players list when game starts
+            if (isMultiplayerEnabled && socket && socket.connected && currentRoomId) {
+                // Request list of other players in the room (with a small delay to ensure everything is initialized)
+                setTimeout(() => {
+                    if (socket && socket.connected && currentRoomId) {
+                        socket.emit('requestOtherPlayers', currentRoomId);
+                        console.log('Requested other players for room:', currentRoomId);
+                    }
+                }, 100);
                 
-                if (socket && socket.connected) {
-                    // Room already joined from lobby, just start the game
-                } else {
-                    // Wait for connection
-                    setTimeout(() => {
-                        if (socket && socket.connected) {
-                            // Room should already be joined
-                        }
-                    }, 1000);
-                }
+                // Also ensure we're visible to others by sending our position once playerBody exists
+                setTimeout(() => {
+                    if (socket && socket.connected && playerBody) {
+                        sendPositionUpdate();
+                    }
+                }, 1000);
             }
 
             // NEW: Reset Shop Costs to Base Values
@@ -3317,17 +3765,18 @@
         window.startMultiplayerMode = startMultiplayerMode;
 
         function togglePause() {
-            if (gameState === 'playing') {
-                gameState = 'paused';
+            // Local pause: only disable player controls/UI. Game keeps running.
+            if (!isPlayerPaused) {
+                isPlayerPaused = true;
                 pauseMenuEl.style.display = 'flex';
                 document.exitPointerLock();
-            } else if (gameState === 'paused') {
+            } else {
                 resumeGame();
             }
         }
 
         function resumeGame() {
-            gameState = 'playing';
+            isPlayerPaused = false;
             pauseMenuEl.style.display = 'none';
             const promise = document.body.requestPointerLock();
             if (promise) promise.catch(e=>{});
@@ -3345,6 +3794,7 @@
             isDefenseMode = false;
         }
         window.quitToMainMenu = quitToMainMenu;
+        window.returnToMainMenu = returnToMainMenu;
 
         function showEnemiesInfo() {
             document.getElementById('enemies-info-modal').style.display = 'flex';
@@ -3363,6 +3813,7 @@
         window.showJoinRoom = showJoinRoom;
         window.showLobbyOptions = showLobbyOptions;
         window.startGameFromLobby = startGameFromLobby;
+        window.copyShareableLink = copyShareableLink;
 
         function updateDefenseUI() {
             waveNumEl.innerText = defenseWave;
@@ -3870,14 +4321,17 @@
         function buyRepair() {
             const cost = shopCosts.repair;
             if (defenseCoins >= cost) {
-                // MULTIPLAYER: Send purchase to server
-                if (socket && socket.connected) {
+                // MULTIPLAYER: Send purchase to server (server validates and syncs)
+                if (isMultiplayerEnabled && socket && socket.connected) {
                     socket.emit('shopPurchase', {
                         type: 'repair',
                         cost: cost
                     });
+                    // Wait for server confirmation before applying locally
+                    return;
                 }
                 
+                // Single player or no connection - apply immediately
                 defenseCoins -= cost;
                 defenseCoreHealth = Math.min(100, defenseCoreHealth + 25);
                 
@@ -4000,14 +4454,17 @@
             
             const cost = shopCosts.upgradeMaxCharge;
             if (defenseCoins >= cost) {
-                // MULTIPLAYER: Send purchase to server
-                if (socket && socket.connected) {
+                // MULTIPLAYER: Send purchase to server (server validates and syncs)
+                if (isMultiplayerEnabled && socket && socket.connected) {
                     socket.emit('shopPurchase', {
                         type: 'upgradeMaxCharge',
                         cost: cost
                     });
+                    // Wait for server confirmation before applying locally
+                    return;
                 }
                 
+                // Single player or offline - apply immediately
                 defenseCoins -= cost;
                 hasMaxChargeUpgrade = true;
 
@@ -4023,14 +4480,17 @@
         function buyMassCannonUpgrade() {
             const cost = shopCosts.upgradeHeavy;
             if (defenseCoins >= cost) {
-                // MULTIPLAYER: Send purchase to server
-                if (socket && socket.connected) {
+                // MULTIPLAYER: Send purchase to server (server validates and syncs)
+                if (isMultiplayerEnabled && socket && socket.connected) {
                     socket.emit('shopPurchase', {
                         type: 'upgradeHeavy',
                         cost: cost
                     });
+                    // Wait for server confirmation before applying locally
+                    return;
                 }
                 
+                // Single player or no connection - apply immediately
                 defenseCoins -= cost;
                 
                 massCannonLevel++;
@@ -4956,6 +5416,9 @@
         }
 
         function spawnEnemy(isBoss = false, isSpeedy = false, isSplitter = false) {
+            // Only host spawns enemies in multiplayer to keep waves in sync
+            if (isMultiplayerEnabled && isDefenseMode && !isHost) return;
+            
             const dir = new THREE.Vector3();
             camera.getWorldDirection(dir);
             
@@ -5489,65 +5952,54 @@
             updateDefenseUI();
         }
 
-        // UPDATED: Fixed visual feedback for Bosses (Groups) vs Standard Enemies (Meshes)
+        // UPDATED: Fixed visual feedback and proper death handling
         function damageEnemy(enemy, amount) {
+            if (!enemy) return;
             enemy.hp -= amount;
-            
-            // FIXED: Clamp HP to 0 to prevent negative values and ensure one-shot kills work
             if (enemy.hp < 0) enemy.hp = 0;
             
             // MULTIPLAYER: Notify server of enemy hit
             if (socket && socket.connected) {
                 const enemyIndex = defenseEnemies.indexOf(enemy);
                 if (enemyIndex >= 0) {
-                    socket.emit('enemyHit', {
-                        enemyIndex: enemyIndex,
-                        damage: amount
-                    });
+                socket.emit('enemyHit', {
+                    enemyIndex: enemyIndex,
+                    damage: amount
+                });
                 }
             }
             
-            // Recursive function to flash any object (Mesh or Group of Meshes)
+            // Flash hit
             const flashWhite = (obj) => {
                 if (obj.isMesh && obj.material) {
-                    // Only save original color if not already flashing to prevent overwriting with white
                     if (!obj.userData.isFlashing) {
                         obj.userData.originalHex = obj.material.color.getHex();
                         obj.userData.isFlashing = true;
-                        
-                        // Flash White
                         obj.material.color.setHex(0xffffff);
-                        
-                        // Restore after 100ms
                         setTimeout(() => {
-                            if (obj.material) {
-                                // Restore original color
-                                if (obj.userData.originalHex !== undefined) {
-                                    obj.material.color.setHex(obj.userData.originalHex);
-                                }
-                                obj.userData.isFlashing = false;
-                                obj.userData.originalHex = undefined; 
+                            if (obj.material && obj.userData.originalHex !== undefined) {
+                                obj.material.color.setHex(obj.userData.originalHex);
                             }
+                            obj.userData.isFlashing = false;
+                            obj.userData.originalHex = undefined;
                         }, 100);
                     }
                 }
-                // Recursively flash children (for Bosses)
                 if (obj.children && obj.children.length > 0) {
                     obj.children.forEach(child => flashWhite(child));
                 }
             };
-
-            // Trigger the flash
             if (enemy.mesh) flashWhite(enemy.mesh);
-
-            // FIXED: Check for death immediately after damage and clamp, ensuring one-shot kills work
+            
+            // Death check
             if (enemy.hp <= 0) {
-                enemy.hp = 0; // Ensure it's exactly 0
                 const idx = defenseEnemies.indexOf(enemy);
                 if (idx > -1) {
                     killEnemy(idx);
                 }
             }
+            
+            updateDefenseUI();
         }
 
         function updateDefenseGame(dt) {
@@ -6824,7 +7276,7 @@
             // Check if shop is open to prevent auto-pausing
             const shopOpen = document.getElementById('defense-shop').style.display === 'flex';
 
-            if (!isLocked && gameState === 'playing' && !shopOpen) {
+            if (!isLocked && gameState === 'playing' && !shopOpen && !isPlayerPaused) {
                 togglePause();
             }
         }
@@ -7098,7 +7550,7 @@
                 return;
             }
 
-            if (!isLocked) {
+            if (!isLocked || isPlayerPaused) {
                 if(gameState === 'playing') {
                     const promise = document.body.requestPointerLock();
                     if (promise) promise.catch(err => console.log("Pointer lock failed:", err));
@@ -8004,7 +8456,7 @@
         }
 
         function updatePlayerMovement(delta) {
-            if (!isLocked || !playerBody) return;
+            if (!isLocked || !playerBody || isPlayerPaused) return;
 
             const speedMultiplier = 1.0;
 
@@ -8613,7 +9065,7 @@
         }
 
         function onMouseMove(event) {
-            if (!isLocked) return;
+            if (!isLocked || isPlayerPaused) return;
             const sensitivity = 0.002;
             camera.rotation.y -= event.movementX * sensitivity;
             camera.rotation.x -= event.movementY * sensitivity;
@@ -9783,9 +10235,26 @@
                 const combinedSlowdown = (isSlowMo ? CONFIG.slowMoScale : 1.0) * shopSlowdown;
                 const slowedDt = dt * combinedSlowdown;
                 
-                // MULTIPLAYER: Send position updates
-                if (isDefenseMode) {
+                // MULTIPLAYER: Send position updates (throttled inside function)
+            if (isMultiplayerEnabled && isDefenseMode && socket && socket.connected) {
                     sendPositionUpdate();
+                    
+                    // Host syncs game state periodically (every 2 seconds)
+                    if (isHost) {
+                        const now = Date.now();
+                        if (!lastGameStateSync) lastGameStateSync = 0;
+                        if (now - lastGameStateSync > 2000) {
+                            lastGameStateSync = now;
+                            socket.emit('syncGameState', {
+                                wave: defenseWave,
+                                coreHealth: defenseCoreHealth,
+                                coins: defenseCoins,
+                                enemiesToSpawn: enemiesToSpawn,
+                                totalEnemiesForWave: totalEnemiesForWave,
+                                waveInProgress: waveInProgress
+                            });
+                        }
+                    }
                 }
                 
                 if (isDefenseMode) {
@@ -10017,6 +10486,25 @@
 
                 // FIXED: Make camera offset taller
                 if (playerBody) camera.position.copy(playerBody.position).add(new THREE.Vector3(0, 8.5, 0)); // Increased from 6.0 to 8.5
+                
+                // MULTIPLAYER: Update other players' visibility and make them face camera
+                if (isMultiplayerEnabled && isDefenseMode && otherPlayers.size > 0) {
+                    otherPlayers.forEach((player, playerId) => {
+                        if (player && player.mesh) {
+                            // Make sure player is visible
+                            player.mesh.visible = true;
+                            // Update sprite to always face camera (only every 3rd frame for performance)
+                            if (player.sprite && frameCount % 3 === 0) {
+                                player.sprite.lookAt(camera.position);
+                            }
+                            // Make glow pulse slightly (lightweight, can update every frame)
+                            if (player.glow) {
+                                const pulse = 1 + Math.sin(Date.now() * 0.003) * 0.2;
+                                player.glow.scale.setScalar(pulse);
+                            }
+                        }
+                    });
+                }
 
                 if (screenShake > 0) {
                     const rx = (Math.random() - 0.5) * screenShake;

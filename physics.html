@@ -2719,7 +2719,12 @@
             
             socket.on('playerPosition', (data) => {
                 if (data && data.playerId && data.playerId !== myPlayerId) {
+                    console.log('Received position update for player:', data.playerId, 'at:', data.position);
                     updateOtherPlayer(data.playerId, data.position, data.rotation, data.cameraRotation);
+                } else if (data && data.playerId === myPlayerId) {
+                    // Ignore our own position updates
+                } else {
+                    console.warn('Invalid playerPosition data:', data);
                 }
             });
             
@@ -3175,7 +3180,12 @@
         }
         
         function createOtherPlayer(playerId, position, rotation, cameraRotation) {
-            if (otherPlayers.has(playerId)) return;
+            if (otherPlayers.has(playerId)) {
+                console.log('Player already exists:', playerId);
+                return;
+            }
+            
+            console.log('Creating other player visual:', playerId, 'at position:', position);
             
             // Create a more visible player indicator
             const group = new THREE.Group();
@@ -3256,6 +3266,8 @@
                 rotation: rotation || { x: 0, y: 0, z: 0 },
                 cameraRotation: cameraRotation || { x: 0, y: 0 }
             });
+            
+            console.log('Player created successfully:', playerId, 'Total other players:', otherPlayers.size);
         }
         
         function updateOtherPlayer(playerId, position, rotation, cameraRotation) {
@@ -3290,7 +3302,10 @@
                 }
             } else if (position && !otherPlayers.has(playerId)) {
                 // Player doesn't exist yet - create them
+                console.log('Player not found, creating from position update:', playerId);
                 createOtherPlayer(playerId, position, rotation, cameraRotation);
+            } else if (!player) {
+                console.warn('updateOtherPlayer: Player not found and no position provided:', playerId);
             }
         }
         
@@ -3421,7 +3436,12 @@
         }
         
         function sendPositionUpdate() {
-            if (!socket || !socket.connected || !isDefenseMode) return;
+            if (!socket || !socket.connected || !isDefenseMode) {
+                if (!socket || !socket.connected) {
+                    console.warn('Cannot send position: socket not connected');
+                }
+                return;
+            }
             
             const now = Date.now();
             if (now - lastPositionUpdate < POSITION_UPDATE_INTERVAL) return;
@@ -3450,6 +3470,8 @@
                     rotation: rotation,
                     cameraRotation: cameraRotation
                 });
+            } else {
+                console.warn('Cannot send position: playerBody or camera not ready', { playerBody: !!playerBody, camera: !!camera });
             }
         }
 

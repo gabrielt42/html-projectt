@@ -2638,7 +2638,8 @@
                 console.log('Player joined:', data.playerId);
                 // Other player joined - create them if they don't exist
                 if (data.playerId !== myPlayerId && !otherPlayers.has(data.playerId)) {
-                    createOtherPlayer(data.playerId, data.position, null, null);
+                    // Create player at a default position - they'll update when position is received
+                    createOtherPlayer(data.playerId, { x: 0, y: 5, z: 0 }, null, null);
                 }
             });
             
@@ -2647,7 +2648,7 @@
                 removeOtherPlayer(data.playerId);
             });
             
-            socket.on('playerMoved', (data) => {
+            socket.on('playerPosition', (data) => {
                 updateOtherPlayer(data.playerId, data.position, data.rotation, data.cameraRotation);
             });
             
@@ -3108,8 +3109,8 @@
             // Create a more visible player indicator
             const group = new THREE.Group();
             
-            // Main body - larger, more visible sphere
-            const bodyGeometry = new THREE.SphereGeometry(1.5, 16, 16);
+            // Main body - larger, more visible sphere (increased size)
+            const bodyGeometry = new THREE.SphereGeometry(2, 16, 16);
             const bodyMaterial = new THREE.MeshBasicMaterial({ 
                 color: 0x00ff00, 
                 transparent: true, 
@@ -3118,8 +3119,8 @@
             const bodyMesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
             group.add(bodyMesh);
             
-            // Glow effect - outer ring
-            const glowGeometry = new THREE.SphereGeometry(2, 16, 16);
+            // Glow effect - outer ring (increased size)
+            const glowGeometry = new THREE.SphereGeometry(2.5, 16, 16);
             const glowMaterial = new THREE.MeshBasicMaterial({ 
                 color: 0x00ff00, 
                 transparent: true, 
@@ -3190,14 +3191,15 @@
             const player = otherPlayers.get(playerId);
             if (player && player.mesh) {
                 if (position) {
-                    // Update position - ensure Y is at ground level or player height
+                    // Update position with smooth interpolation
                     const yPos = position.y !== undefined ? position.y : 5;
-                    player.mesh.position.set(position.x, yPos, position.z);
+                    const targetPos = new THREE.Vector3(position.x, yPos, position.z);
+                    player.mesh.position.lerp(targetPos, 0.3); // Smooth interpolation
                     player.position = { ...position, y: yPos };
                 }
                 if (rotation) {
                     // Update rotation - arrow points in the direction player is facing
-                    player.mesh.rotation.set(rotation.x, rotation.y, rotation.z);
+                    player.mesh.rotation.y = rotation.y;
                     if (player.arrow) {
                         player.arrow.rotation.y = rotation.y;
                     }
@@ -3206,6 +3208,18 @@
                 if (cameraRotation) {
                     player.cameraRotation = cameraRotation;
                 }
+                // Make sprite always face camera
+                if (player.sprite && camera) {
+                    player.sprite.lookAt(camera.position);
+                }
+                // Animate glow
+                if (player.glow) {
+                    const scale = 1.0 + Math.sin(Date.now() * 0.005) * 0.1;
+                    player.glow.scale.setScalar(scale);
+                }
+            } else if (position && !otherPlayers.has(playerId)) {
+                // Player doesn't exist yet - create them
+                createOtherPlayer(playerId, position, rotation, cameraRotation);
             }
         }
         
@@ -5474,12 +5488,9 @@
             // Only host spawns enemies in multiplayer to keep waves in sync
             if (isMultiplayerEnabled && isDefenseMode && !isHost) return;
             
-            const dir = new THREE.Vector3();
-            camera.getWorldDirection(dir);
-            
-            const baseAngle = Math.atan2(dir.z, dir.x);
-            const spread = (Math.random() - 0.5) * 1.5; 
-            const angle = baseAngle + spread;
+            // FIXED: Spawn enemies in a random circle around the core (0,0,0) instead of relative to camera
+            // This ensures all clients see enemies at the same positions
+            const angle = Math.random() * Math.PI * 2; // Random angle around the core
 
             // UPDATED: Distance Logic
             // Standard Enemies: 200 - 310

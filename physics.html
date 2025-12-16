@@ -2620,6 +2620,14 @@
                 document.getElementById('room-info').style.display = 'none';
                 if (quickPlayWaitEl) quickPlayWaitEl.style.display = 'none';
                 
+                // Request other players list in case we missed the otherPlayers event
+                setTimeout(() => {
+                    if (socket && socket.connected && currentRoomId) {
+                        console.log('Requesting other players after game start...');
+                        socket.emit('requestOtherPlayers', currentRoomId);
+                    }
+                }, 500);
+                
                 // Start the game for both players after reset
                 if (!isDefenseMode || gameState !== 'playing') {
                     startDefenseMode();
